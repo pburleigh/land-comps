@@ -310,8 +310,7 @@ for r in rows_for_sale:
         r["_fetch_listing_type"] = "for_sale"
 
 rows = rows_sold + rows_for_sale
-    )
-
+    
     comps: List[Comp] = []
     for raw in rows:
         comp = normalize_comp(raw, subject)
