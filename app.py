@@ -272,7 +272,7 @@ def land_comps(req: LandCompsRequest):
     past_days = int(filters.months_back * 30.4)  # approx months -> days
 
     # HomeHarvest expects listing_type as a single string in the installed version.
-    properties_sold = scrape_property(
+properties_sold = scrape_property(
         location=location_string,
         listing_type="sold",
         property_type=["land", "farm"],
@@ -286,6 +286,17 @@ def land_comps(req: LandCompsRequest):
         property_type=["land", "farm"],
         past_days=past_days,
         limit=filters.max_candidates,
+    )
+except Exception as e:
+    # Return a readable error to the client instead of a generic 500
+    raise HTTPException(
+        status_code=502,
+        detail={
+            "message": "HomeHarvest/Realtor request failed (likely blocked or non-JSON response).",
+            "location_string": location_string,
+            "error": str(e),
+            "tip": "Try a different ZIP, reduce limit, or add a proxy. Realtor may block cloud datacenter IPs.",
+        },
     )
 
     rows_sold = (
