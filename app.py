@@ -270,18 +270,47 @@ def land_comps(req: LandCompsRequest):
     location_string = build_location_string(subject)
     past_days = int(filters.months_back * 30.4)  # approx
 
-    # HomeHarvest fetch
-    # We request both sold + for_sale, land + farm, and do our own filtering/ranking after.
-    properties = scrape_property(
-        location=location_string,
-        listing_type=["sold", "for_sale"],
-        property_type=["land", "farm"],
-        past_days=past_days,
-        limit=filters.max_candidates,
-    )
+ # HomeHarvest (installed version) expects listing_type as a single string, not a list.
+# So we fetch SOLD and FOR_SALE separately, then combine.
+properties_sold = scrape_property(
+    location=location_string,
+    listing_type="sold",
+    property_type=["land", "farm"],
+    past_days=past_days,
+    limit=filters.max_candidates,
+)
 
-    # Convert to records
-    rows = properties.to_dict(orient="records") if hasattr(properties, "to_dict") else list(properties)
+properties_for_sale = scrape_property(
+    location=location_string,
+    listing_type="for_sale",
+    property_type=["land", "farm"],
+    past_days=past_days,
+    limit=filters.max_candidates,
+)
+
+# Convert to records
+rows_sold = (
+    properties_sold.to_dict(orient="records")
+    if hasattr(properties_sold, "to_dict")
+    else list(properties_sold)
+)
+rows_for_sale = (
+    properties_for_sale.to_dict(orient="records")
+    if hasattr(properties_for_sale, "to_dict")
+    else list(properties_for_sale)
+)
+
+# Tag rows with a hint about which fetch they came from (helps normalization)
+for r in rows_sold:
+    if isinstance(r, dict):
+        r["_fetch_listing_type"] = "sold"
+
+for r in rows_for_sale:
+    if isinstance(r, dict):
+        r["_fetch_listing_type"] = "for_sale"
+
+rows = rows_sold + rows_for_sale
+    )
 
     comps: List[Comp] = []
     for raw in rows:
