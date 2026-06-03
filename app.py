@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Literal, Optional, Dict, Any, Tuple
 import math
@@ -106,10 +106,6 @@ def has_street_number(street: Optional[str]) -> bool:
 
 
 def is_usable_address(subject: Subject) -> bool:
-    # Usable if:
-    # - state exists
-    # - at least one of city/zip exists
-    # - street has a number (avoids "Main St" only)
     if not subject.state:
         return False
     if not (subject.city or subject.zip):
@@ -160,15 +156,12 @@ def reverse_geocode_zip_or_city_state(lat: float, lng: float) -> Tuple[Optional[
 
 
 def build_location_string(subject: Subject) -> str:
-    # 1) usable full address
     if is_usable_address(subject):
         return format_full_address(subject)
 
-    # 2) zip from DB
     if subject.zip:
         return subject.zip.strip()
 
-    # 3) reverse geocode -> zip first, else city/state
     zip_code, city, state = reverse_geocode_zip_or_city_state(subject.lat, subject.lng)
     if zip_code:
         return zip_code
@@ -177,7 +170,6 @@ def build_location_string(subject: Subject) -> str:
     if state:
         return state
 
-    # last resort
     return f"{subject.lat}, {subject.lng}"
 
 
@@ -196,13 +188,11 @@ def parse_date_to_yyyy_mm_dd(value: Any) -> Optional[str]:
 
 
 def normalize_status(raw: Dict[str, Any]) -> Status:
-    # Prefer explicit hints
     s = (raw.get("status") or raw.get("mls_status") or raw.get("_fetch_listing_type") or "").lower()
     if "sold" in s:
         return "SOLD"
     if "for_sale" in s or "sale" in s or "active" in s or "listed" in s:
         return "FOR_SALE"
-    # default to FOR_SALE if unclear
     return "FOR_SALE"
 
 
@@ -247,7 +237,6 @@ def normalize_comp(raw: Dict[str, Any], subject: Subject) -> Optional[Comp]:
         url=url,
     )
 
-    # Derived fields
     if comp.lot_sqft and comp.lot_sqft > 0:
         comp.acres = comp.lot_sqft / 43560.0
         comp.price_per_sqft = comp.price / comp.lot_sqft
@@ -269,35 +258,34 @@ def land_comps(req: LandCompsRequest):
     filters = req.filters
 
     location_string = build_location_string(subject)
-    past_days = int(filters.months_back * 30.4)  # approx months -> days
+    past_days = int(filters.months_back * 30.4)
 
-    # HomeHarvest expects listing_type as a single string in the installed version.
-properties_sold = scrape_property(
-        location=location_string,
-        listing_type="sold",
-        property_type=["land", "farm"],
-        past_days=past_days,
-        limit=filters.max_candidates,
-    )
+    try:
+        properties_sold = scrape_property(
+            location=location_string,
+            listing_type="sold",
+            property_type=["land", "farm"],
+            past_days=past_days,
+            limit=filters.max_candidates,
+        )
 
-    properties_for_sale = scrape_property(
-        location=location_string,
-        listing_type="for_sale",
-        property_type=["land", "farm"],
-        past_days=past_days,
-        limit=filters.max_candidates,
-    )
-except Exception as e:
-    # Return a readable error to the client instead of a generic 500
-    raise HTTPException(
-        status_code=502,
-        detail={
-            "message": "HomeHarvest/Realtor request failed (likely blocked or non-JSON response).",
-            "location_string": location_string,
-            "error": str(e),
-            "tip": "Try a different ZIP, reduce limit, or add a proxy. Realtor may block cloud datacenter IPs.",
-        },
-    )
+        properties_for_sale = scrape_property(
+            location=location_string,
+            listing_type="for_sale",
+            property_type=["land", "farm"],
+            past_days=past_days,
+            limit=filters.max_candidates,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": "HomeHarvest/Realtor request failed (likely blocked or non-JSON response).",
+                "location_string": location_string,
+                "error": str(e),
+                "tip": "Try a different ZIP, reduce limit, or add a proxy. Realtor may block cloud datacenter IPs.",
+            },
+        )
 
     rows_sold = (
         properties_sold.to_dict(orient="records")
@@ -328,15 +316,12 @@ except Exception as e:
         if comp is None:
             continue
 
-        # Only include requested statuses
         if comp.status not in filters.include_statuses:
             continue
 
-        # Distance filter (only if known)
         if comp.distance_miles is not None and comp.distance_miles > filters.radius_miles:
             continue
 
-        # Acres similarity filter (only if comp acres known)
         if comp.acres is not None and subject.acres:
             if comp.acres < filters.acres_ratio_min * subject.acres:
                 continue
@@ -345,7 +330,6 @@ except Exception as e:
 
         comps.append(comp)
 
-    # Ranking: prefer SOLD slightly
     def score(c: Comp) -> float:
         dist = c.distance_miles if c.distance_miles is not None else 9999.0
         acres_diff = abs((c.acres if c.acres is not None else subject.acres) - subject.acres)
